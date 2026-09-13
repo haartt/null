@@ -1,151 +1,130 @@
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>puntatore</title>
 <style>
-  * { margin: 0; padding: 0; }
-
-  html, body {
-    height: 100%;
-    overflow: hidden;
-    background: #000;
-    touch-action: none;
-    overscroll-behavior: none;
-    cursor: none;
-  }
-
-  #c {
-    position: fixed;
-    inset: 0;
-    display: block;
-    image-rendering: pixelated;
-  }
-
-  #invert {
-    position: fixed;
-    top: 14px;
-    right: 14px;
-    width: 22px;
-    height: 22px;
-    border: 2px solid #fff;
-    background: transparent;
-    cursor: none;
-    padding: 0;
-  }
-  #invert:active { transform: scale(0.85); }
-
-  body.light { background: #fff; }
-  body.light #invert { border-color: #000; }
+  * { margin:0; padding:0; }
+  html, body { height:100%; background:#000; overflow:hidden; }
+  #pixelCanvas { display:block; width:100vw; height:100vh; cursor:none; }
+  #err { position:fixed; top:10px; left:10px; color:red; font:14px monospace; z-index:10; white-space:pre-wrap; }
 </style>
 </head>
 <body>
-
-<canvas id="c"></canvas>
-<button id="invert" aria-label="invert"></button>
-
+<canvas id="pixelCanvas"></canvas>
+<div id="err"></div>
 <script>
 (() => {
-  const canvas = document.getElementById('c');
+  const IMG_SRC = 'Assets/artworkDark.png'; // relative path
+  const CELL = 24;
+  const DECAY_MS = 400;
+  const MIN_CELL = 3; // dimensione pixel minima (più risoluzione) vicino al cursore
+  const MAX_W = 1600; // downscale target
+
+  const canvas = document.getElementById('pixelCanvas');
   const ctx = canvas.getContext('2d');
-  const btn = document.getElementById('invert');
+  const errBox = document.getElementById('err');
 
-  const CELL = 14;          // pixel size on screen
-  const LEVELS = 6;         // brightness steps (chunky fade)
-  const DECAY_MS = 260;     // time per step
+  let cols, rows, W, H, reveal, lastTick, small, smallCtx, img;
+  let lastX, lastY;
 
-  let cols, rows, grid, last;
-  let light = false;        // false = black bg / white trail
-
-  function resize() {
-    cols = Math.ceil(innerWidth / CELL);
-    rows = Math.ceil(innerHeight / CELL);
-    canvas.width = cols;
-    canvas.height = rows;
-    canvas.style.width = cols * CELL + 'px';
-    canvas.style.height = rows * CELL + 'px';
-    grid = new Float32Array(cols * rows);   // 0..1 intensity
-    last = new Float32Array(cols * rows);   // last decay tick
+  function fail(msg) {
+    errBox.textContent = msg;
+    console.error(msg);
   }
-  resize();
-  addEventListener('resize', resize);
 
-  const ptr = { x: -1, y: -1, has: false };
+  function layout() {
+    W = innerWidth;
+    H = innerHeight;
+    canvas.width = W;
+    canvas.height = H;
+    cols = Math.max(1, Math.ceil(W / CELL));
+    rows = Math.max(1, Math.ceil(H / CELL));
+    reveal = new Float32Array(cols * rows);
+    lastTick = new Float32Array(cols * rows);
+    small = document.createElement('canvas');
+    small.width = cols;
+    small.height = rows;
+    smallCtx = small.getContext('2d');
+    smallCtx.drawImage(img, 0, 0, cols, rows);
+  }
 
-  function paint(px, py) {
-    const cx = px / CELL | 0;
-    const cy = py / CELL | 0;
-    // stamp a small ragged blob, not a perfect circle
-    for (let dy = -2; dy <= 2; dy++) {
-      for (let dx = -2; dx <= 2; dx++) {
-        const d = Math.abs(dx) + Math.abs(dy);
-        if (d > 3) continue;
-        if (d >= 2 && Math.random() < 0.55) continue;
+  img = new Image();
+img.onload = () => {
+  img.naturalWidth = img.width;
+  img.naturalHeight = img.height;
+  layout();
+  requestAnimationFrame(frame);
+};
+img.onerror = () => fail('Image load failed. Check IMG_SRC path: ' + IMG_SRC);
+img.src = IMG_SRC;
+
+  function unlock(px, py) {
+    lastX = px; lastY = py;
+    if (!cols) return;
+    const cx = px / CELL | 0, cy = py / CELL | 0;
+    for (let dy = -1; dy <= 1; dy++) {
+      for (let dx = -1; dx <= 1; dx++) {
         const x = cx + dx, y = cy + dy;
         if (x < 0 || y < 0 || x >= cols || y >= rows) continue;
         const i = y * cols + x;
-        grid[i] = 1;
-        last[i] = performance.now() + Math.random() * DECAY_MS;
+        reveal[i] = 1;
+        lastTick[i] = performance.now();
       }
     }
   }
 
-  function onMove(x, y) {
-    // interpolate so fast moves leave a solid track
-    if (ptr.has) {
-      const steps = Math.ceil(Math.hypot(x - ptr.x, y - ptr.y) / CELL);
-      for (let s = 1; s <= steps; s++) {
-        paint(ptr.x + (x - ptr.x) * s / steps, ptr.y + (y - ptr.y) * s / steps);
-      }
-    } else {
-      paint(x, y);
-    }
-    ptr.x = x; ptr.y = y; ptr.has = true;
-  }
-
-  addEventListener('pointermove', e => onMove(e.clientX, e.clientY), { passive: true });
-  addEventListener('pointerdown', e => {
-    if (e.target === btn) return;
-    ptr.has = false;
-    onMove(e.clientX, e.clientY);
-  });
-  addEventListener('pointerleave', () => { ptr.has = false; });
-
-  btn.addEventListener('pointerdown', e => e.stopPropagation());
-  btn.addEventListener('click', () => {
-    light = !light;
-    document.body.classList.toggle('light', light);
-  });
+  canvas.addEventListener('pointermove', e => unlock(e.clientX, e.clientY));
+  canvas.addEventListener('pointerleave', () => { lastX = undefined; });
 
   function frame(now) {
-    ctx.fillStyle = light ? '#fff' : '#000';
-    ctx.fillRect(0, 0, cols, rows);
+    ctx.imageSmoothingEnabled = false;
+    ctx.clearRect(0, 0, W, H);
+    ctx.drawImage(small, 0, 0, W, H); // base pixelata
 
-    for (let i = 0; i < grid.length; i++) {
-      let v = grid[i];
-      if (v <= 0) continue;
-      if (now - last[i] > DECAY_MS) {
-        v = grid[i] = v - 1 / LEVELS;
-        last[i] = now;
-        if (v <= 0) continue;
+    for (let y = 0; y < rows; y++) {
+      for (let x = 0; x < cols; x++) {
+        const i = y * cols + x;
+        if (reveal[i] <= 0) continue;
+        if (now - lastTick[i] > DECAY_MS) {
+          reveal[i] -= 0.05;
+          lastTick[i] = now;
+        }
+        if (reveal[i] <= 0) { reveal[i] = 0; continue; }
+
+        const subCell = CELL - (CELL - MIN_CELL) * reveal[i];
+        const sub = Math.max(1, Math.round(CELL / subCell));
+
+        const baseSx = x / cols * img.naturalWidth;
+        const baseSy = y / rows * img.naturalHeight;
+        const cellSw = img.naturalWidth / cols;
+        const cellSh = img.naturalHeight / rows;
+
+        for (let sy = 0; sy < sub; sy++) {
+          for (let sx = 0; sx < sub; sx++) {
+            const srcX = baseSx + (sx / sub) * cellSw;
+            const srcY = baseSy + (sy / sub) * cellSh;
+            const srcW = cellSw / sub;
+            const srcH = cellSh / sub;
+            ctx.drawImage(
+              img, srcX, srcY, srcW, srcH,
+              x * CELL + (sx / sub) * CELL,
+              y * CELL + (sy / sub) * CELL,
+              CELL / sub, CELL / sub
+            );
+          }
+        }
       }
-      // quantize to steps so the fade looks pixelated, not smooth
-      const q = Math.ceil(v * LEVELS) / LEVELS;
-      const tone = light ? (1 - q) * 255 : q * 255;
-      ctx.fillStyle = `rgb(${tone | 0},${tone | 0},${tone | 0})`;
-      ctx.fillRect(i % cols, i / cols | 0, 1, 1);
     }
 
-    // the pointer itself: one solid pixel block
-    if (ptr.has) {
-      ctx.fillStyle = light ? '#000' : '#fff';
-      ctx.fillRect(ptr.x / CELL | 0, ptr.y / CELL | 0, 1, 1);
+    if (lastX !== undefined) {
+      ctx.fillStyle = '#fff';
+      ctx.beginPath();
+      ctx.arc(lastX, lastY, 4, 0, Math.PI * 2);
+      ctx.fill();
     }
 
     requestAnimationFrame(frame);
   }
-  requestAnimationFrame(frame);
 })();
 </script>
 </body>
